@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="© 2026 NINS (by JPGT).">
+    <title>nins/Hand-Dual-Zen-Speed</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: "Courier New", Courier, monospace, Arial, sans-serif;
+            color: #00ff66;
+            cursor: pointer;
+        }
+
+        .container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #webcam, #output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        #webcam {
+            transform: scaleX(-1);
+            transition: opacity 0.3s ease;
+            opacity: 0;
+        }
+
+        #webcam.show {
+            opacity: 0.15;
+        }
+
+        #status-container {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            text-align: center;
+            width: 480px;
+            background: rgba(5, 5, 5, 0.85);
+            padding: 15px;
+            border-radius: 4px;
+            border: 1px solid #00ff66;
+            box-shadow: 0 0 15px rgba(0, 255, 102, 0.3);
+            pointer-events: none;
+        }
+        #status {
+            color: #00ff66;
+            font-weight: bold;
+        }
+
+        #info-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            z-index: 10;
+            background: rgba(5, 5, 5, 0.85);
+            padding: 12px 20px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: bold;
+            border: 1px solid #00ff66;
+            box-shadow: 0 0 10px rgba(0, 255, 102, 0.2);
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="status-container" style="display: none;">
+        <div id="status">正在載入輕量化手勢模型...</div>
+    </div>
+
+    <div id="info-panel" style="display: none;">
+        SPEED_UP_MODE >> <br><span id="coord-display" style="color: #00ffff; line-height: 1.5;">等待雙手偵測...</span>
+    </div>
+
+    <div class="container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const video = document.getElementById("webcam");
+        const canvasElement = document.getElementById("output_canvas");
+        const canvasCtx = canvasElement.getContext("2d");
+        
+        const statusDiv = document.getElementById("status");
+        const infoPanel = document.getElementById("info-panel");
+        const coordDisplay = document.getElementById("coord-display");
+
+        let handLandmarker = undefined;
+        let lastVideoTime = -1;
+
+        let handL = { targetX: null, targetY: null, radius: 15 };
+        let handR = { targetX: null, targetY: null, radius: 15 };
+        
+        // 增加速度增益參數
+        let food = { x: 0, y: 0, vx: 2, vy: 2, radius: 12, speedMultiplier: 1 };
+        let touchCount = 0;
+
+        ///document.addEventListener("click", () => { video.classList.toggle("show"); });
+
+        function resetGame() {
+            touchCount = 0;
+            food.speedMultiplier = 1;
+            spawnFood();
+            updateStatus();
+        }
+
+        function spawnFood() {
+            const padding = 80;
+            food.x = padding + Math.random() * (canvasElement.width - padding * 2);
+            food.y = padding + Math.random() * (canvasElement.height - padding * 2);
+            
+            // 隨機方向，基礎速度隨 food.speedMultiplier 變快
+            const angle = Math.random() * Math.PI * 2;
+            const baseSpeed = 2.5 + (food.speedMultiplier * 0.5); 
+            food.vx = Math.cos(angle) * baseSpeed;
+            food.vy = Math.sin(angle) * baseSpeed;
+        }
+
+        function updateStatus() {
+            statusDiv.innerHTML = `加速模式 | 成功次數: <span style="color: #ff3333; font-size: 18px;">${touchCount}</span> | 當前速度倍率: x${food.speedMultiplier.toFixed(1)}`;
+        }
+
+        function updateFoodPhysics() {
+            food.x += food.vx; food.y += food.vy;
+            const padding = food.radius;
+            if (food.x < padding || food.x > canvasElement.width - padding) food.vx *= -1;
+            if (food.y < padding || food.y > canvasElement.height - padding) food.vy *= -1;
+        }
+
+        async function initHands() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate: "GPU" },
+                runningMode: "VIDEO", numHands: 2
+            });
+            startCamera();
+        }
+
+        async function startCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
+            video.srcObject = stream;
+            video.addEventListener("loadeddata", () => {
+                canvasElement.width = video.videoWidth; canvasElement.height = video.videoHeight;
+                ///infoPanel.style.display = "block";
+                resetGame();
+                requestAnimationFrame(predictWebcam);
+            });
+        }
+
+        async function predictWebcam() {
+            if (video.currentTime === lastVideoTime) { requestAnimationFrame(predictWebcam); return; }
+            lastVideoTime = video.currentTime;
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            const results = handLandmarker.detectForVideo(video, performance.now());
+            handL.targetX = null; handR.targetX = null;
+
+            if (results && results.landmarks) {
+                results.landmarks.forEach((landmarks, index) => {
+                    const handedness = results.handednesses[index][0].categoryName; 
+                    const corePoints = [landmarks[0], landmarks[5], landmarks[9], landmarks[17]];
+                    const tX = canvasElement.width - ((corePoints.reduce((s, p) => s + p.x, 0) / 4) * canvasElement.width);
+                    const tY = (corePoints.reduce((s, p) => s + p.y, 0) / 4) * canvasElement.height;
+                    const dynamicRadius = Math.max(10, Math.min(45, Math.hypot((landmarks[9].x-landmarks[0].x)*canvasElement.width, (landmarks[9].y-landmarks[0].y)*canvasElement.height) * 0.12));
+
+                    if (handedness === "Right") { handL.targetX = tX; handL.targetY = tY; handL.radius = dynamicRadius; }
+                    else { handR.targetX = tX; handR.targetY = tY; handR.radius = dynamicRadius; }
+                });
+            }
+
+            let isSyncedSize = false;
+            if (handL.targetX !== null && handR.targetX !== null) {
+                const ratio = handL.radius / handR.radius;
+                if (ratio > 0.8 && ratio < 1.2) isSyncedSize = true;
+            }
+
+            const colorL = isSyncedSize ? "#ffffff" : "#00ff66";
+            const colorR = isSyncedSize ? "#ffffff" : "#ffff00";
+            const crossColorL = isSyncedSize ? "rgba(255, 255, 255, 0.2)" : "rgba(0, 255, 102, 0.2)";
+            const crossColorR = isSyncedSize ? "rgba(255, 255, 255, 0.2)" : "rgba(255, 255, 0, 0.2)";
+
+            updateFoodPhysics();
+            canvasCtx.fillStyle = "#ff3333";
+            canvasCtx.beginPath(); canvasCtx.arc(food.x, food.y, food.radius, 0, 2 * Math.PI); canvasCtx.fill();
+            drawDashedCircle(canvasElement.width/2 + (canvasElement.width/2 - food.x), food.y, food.radius, "#ff3333", 2);
+
+            let triggeredL = false, triggeredR = false;
+            const centerX = canvasElement.width / 2;
+
+            if (handL.targetX !== null) {
+                const mx = centerX + (centerX - handL.targetX);
+                drawControlNode(handL.targetX, handL.targetY, handL.radius, colorL, crossColorL);
+                drawDashedCircle(mx, handL.targetY, handL.radius * 1.5, colorL, 2);
+                if (Math.hypot(handL.targetX - food.x, handL.targetY - food.y) < (handL.radius + food.radius) || Math.hypot(mx - food.x, handL.targetY - food.y) < (handL.radius * 1.5 + food.radius)) triggeredL = true;
+            }
+            if (handR.targetX !== null) {
+                const mx = centerX - (handR.targetX - centerX);
+                drawControlNode(handR.targetX, handR.targetY, handR.radius, colorR, crossColorR);
+                drawDashedCircle(mx, handR.targetY, handR.radius * 1.5, colorR, 2);
+                if (Math.hypot(handR.targetX - food.x, handR.targetY - food.y) < (handR.radius + food.radius) || Math.hypot(mx - food.x, handR.targetY - food.y) < (handR.radius * 1.5 + food.radius)) triggeredR = true;
+            }
+
+            if (triggeredL && triggeredR) { 
+                touchCount++; 
+                food.speedMultiplier += 0.2; // 每次成功速度 +0.2 倍
+                spawnFood(); 
+                updateStatus(); 
+            }
+            requestAnimationFrame(predictWebcam);
+        }
+
+        function drawControlNode(x, y, r, color, cross) {
+            canvasCtx.strokeStyle = cross; canvasCtx.lineWidth = 1; canvasCtx.beginPath(); canvasCtx.moveTo(0, y); canvasCtx.lineTo(canvasElement.width, y); canvasCtx.moveTo(x, 0); canvasCtx.lineTo(x, canvasElement.height); canvasCtx.stroke();
+            canvasCtx.fillStyle = color; canvasCtx.beginPath(); canvasCtx.arc(x, y, r, 0, 2 * Math.PI); canvasCtx.fill();
+        }
+        function drawDashedCircle(x, y, r, color, lw) {
+            canvasCtx.save(); canvasCtx.strokeStyle = color; canvasCtx.lineWidth = lw; canvasCtx.setLineDash([6, 4]); canvasCtx.beginPath(); canvasCtx.arc(x, y, r, 0, 2 * Math.PI); canvasCtx.stroke(); canvasCtx.restore();
+        }
+        initHands();
+    </script>
+</body>
+</html>
