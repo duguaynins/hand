@@ -26,6 +26,7 @@
         }
 
         #webcam, #output_canvas {
+            transform: scaleX(-1);
             position: absolute;
             top: 0;
             left: 0;
@@ -35,7 +36,7 @@
         }
 
         #webcam {
-            transform: scaleX(-1);
+            /* transform: scaleX(-1); */
             transition: opacity 0.3s ease;
             opacity: 0;
         }
@@ -179,6 +180,16 @@
             if (results && results.landmarks) {
                 results.landmarks.forEach((landmarks, index) => {
                     const handedness = results.handednesses[index][0].categoryName; 
+                    
+                    // 1. 繪製所有 21 個節點
+                    landmarks.forEach((lm) => {
+                        canvasCtx.fillStyle = "#00ff66";
+                        canvasCtx.beginPath();
+                        canvasCtx.arc(lm.x * canvasElement.width, lm.y * canvasElement.height, 3, 0, 2 * Math.PI);
+                        canvasCtx.fill();
+                    });
+
+                    // 2. 計算手心 (保留原邏輯，確保捕捉正確)
                     const corePoints = [landmarks[0], landmarks[5], landmarks[9], landmarks[17]];
                     const tX = canvasElement.width - ((corePoints.reduce((s, p) => s + p.x, 0) / 4) * canvasElement.width);
                     const tY = (corePoints.reduce((s, p) => s + p.y, 0) / 4) * canvasElement.height;
